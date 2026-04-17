@@ -12,16 +12,56 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\IsGranted;
+use Symfony\Component\Security\Csrf\CsrfTokenManagerInterface;
 
 #[Route('/admin/users')]
 #[IsGranted('ROLE_ADMIN')]
 class UserAdminController extends AbstractController
 {
-    #[Route('/', name: 'app_admin_user_index')]
-    public function index(UserRepository $repository): Response
+    #[Route('/new', name: 'app_admin_user_new', methods: ['GET', 'POST'])]
+    public function new(Request $request, EntityManagerInterface $em, UserPasswordHasherInterface $passwordHasher): Response
     {
+        if ($request->isMethod('POST')) {
+            $user = new User();
+            $user->setUsername($request->request->get('username', ''));
+            $user->setEmail($request->request->get('email', ''));
+            $user->setFirstName($request->request->get('firstName', ''));
+            $user->setLastName($request->request->get('lastName', ''));
+            $user->setPhone($request->request->get('phone', ''));
+
+            $password = $request->request->get('password', '');
+            $hashedPassword = $passwordHasher->hashPassword($user, $password);
+            $user->setPassword($hashedPassword);
+
+            $roles = $request->request->all('roles', []);
+            if (in_array('ROLE_ADMIN', $roles)) {
+                $user->setRoles(['ROLE_ADMIN']);
+            } else {
+                $user->setRoles(['ROLE_USER']);
+            }
+
+            $em->persist($user);
+            $em->flush();
+
+            $this->addFlash('success', 'Utilisateur créé avec succès.');
+            return $this->redirectToRoute('app_admin_user_index');
+        }
+
+        return $this->render('admin/user/new.html.twig', []);
+    }
+
+    #[Route('/', name: 'app_admin_user_index')]
+    public function index(UserRepository $repository, CsrfTokenManagerInterface $csrfTokenManager): Response
+    {
+        $users = $repository->findAll();
+        $deleteTokens = [];
+        foreach ($users as $user) {
+            $deleteTokens[$user->getId()] = $csrfTokenManager->getToken('delete' . $user->getId())->getValue();
+        }
+
         return $this->render('admin/user/index.html.twig', [
-            'users' => $repository->findAll(),
+            'users' => $users,
+            'deleteTokens' => $deleteTokens,
         ]);
     }
 
@@ -90,5 +130,20 @@ class UserAdminController extends AbstractController
         return $this->render('admin/user/edit.html.twig', [
             'user' => $user,
         ]);
+    }
+
+    #[Route('/{id}/delete', name: 'app_admin_user_delete')]
+    public function delete(User $user, EntityManagerInterface $em): Response
+    {
+        if ($user->getId() === $this->getUser()->getId()) {
+            $this->addFlash('error', 'Vous ne pouvez pas supprimer votre propre compte.');
+            return $this->redirectToRoute('app_admin_user_index');
+        }
+
+        $em->remove($user);
+        $em->flush();
+
+        $this->addFlash('success', 'Utilisateur supprimé avec succès.');
+        return $this->redirectToRoute('app_admin_user_index');
     }
 }
